@@ -1,89 +1,70 @@
+from typing import List, Dict, Any
+from dataclasses import dataclass
 import hashlib
 import time
-import json
 
-class Block:
-    def __init__(self, index, transactions, timestamp, previous_hash, nonce=0):
-        self.index = index
-        self.transactions = transactions
-        self.timestamp = timestamp
-        self.previous_hash = previous_hash
-        self.nonce = nonce
-        
-    def compute_hash(self):
-        block_string = json.dumps(self.__dict__, sort_keys=True)
-        return hashlib.sha256(block_string.encode()).hexdigest()
+@dataclass
+class ConsensusMessage:
+    sender_id: str
+    value: Any
+    timestamp: float
+    signature: str
 
-class Blockchain:
-    def __init__(self):
-        self.chain = []
-        self.current_transactions = []
-        self.new_block(previous_hash='1', proof=100)
+class ByzantineConsensus:
+    def __init__(self, node_id: str, total_nodes: int, fault_tolerance: int):
+        self.node_id = node_id
+        self.total_nodes = total_nodes
+        self.fault_tolerance = fault_tolerance
+        self.messages: Dict[str, List[ConsensusMessage]] = {}
+        self.decided_values: Dict[str, Any] = {}
 
-    def new_block(self, proof, previous_hash=None):
-        block = Block(
-            index=len(self.chain) + 1,
-            transactions=self.current_transactions,
+    def _sign_message(self, value: Any) -> str:
+        message = f"{self.node_id}:{value}:{time.time()}"
+        return hashlib.sha256(message.encode()).hexdigest()
+
+    def propose_value(self, round_id: str, value: Any) -> ConsensusMessage:
+        signature = self._sign_message(value)
+        message = ConsensusMessage(
+            sender_id=self.node_id,
+            value=value,
             timestamp=time.time(),
-            previous_hash=previous_hash or self.last_block.compute_hash(),
-            nonce=proof
+            signature=signature
         )
+        
+        if round_id not in self.messages:
+            self.messages[round_id] = []
+        self.messages[round_id].append(message)
+        return message
 
-        self.current_transactions = []
-        self.chain.append(block)
-        return block
+    def receive_message(self, round_id: str, message: ConsensusMessage) -> None:
+        if round_id not in self.messages:
+            self.messages[round_id] = []
+        self.messages[round_id].append(message)
 
-    @property
-    def last_block(self):
-        return self.chain[-1]
+    def get_consensus_value(self, round_id: str) -> Any:
+        if round_id not in self.messages:
+            return None
 
-    def new_transaction(self, sender, recipient, amount):
-        self.current_transactions.append({
-            'sender': sender,
-            'recipient': recipient,
-            'amount': amount
-        })
-        return self.last_block.index + 1
+        # Count value frequencies
+        value_counts: Dict[Any, int] = {}
+        for msg in self.messages[round_id]:
+            value = msg.value
+            value_counts[value] = value_counts.get(value, 0) + 1
 
-    def proof_of_work(self, block):
-        difficulty = 4
-        block.nonce = 0
-        computed_hash = block.compute_hash()
-        while not computed_hash.startswith('0' * difficulty):
-            block.nonce += 1
-            computed_hash = block.compute_hash()
-        return block.nonce
+        # Find value with more than 2f+1 occurrences
+        quorum = self.total_nodes - self.fault_tolerance
+        for value, count in value_counts.items():
+            if count >= quorum:
+                self.decided_values[round_id] = value
+                return value
 
-    def is_valid(self):
-        block = self.chain[0]
-        if block.index != 1 or block.previous_hash != '1':
-            return False
+        return None
 
-        for i in range(1, len(self.chain)):
-            current_block = self.chain[i]
-            previous_block = self.chain[i - 1]
+    def is_decided(self, round_id: str) -> bool:
+        return round_id in self.decided_values
 
-            if current_block.previous_hash != previous_block.compute_hash():
-                return False
-
-            if not self.is_valid_proof(current_block):
-                return False
-
-        return True
-
-    def is_valid_proof(self, block):
-        difficulty = 4
-        return block.compute_hash().startswith('0' * difficulty)
-
-# Example usage
-blockchain = Blockchain()
-
-blockchain.new_transaction('Alice', 'Bob', 5.0)
-blockchain.new_transaction('Bob', 'Charlie', 2.5)
-blockchain.new_block(blockchain.proof_of_work(blockchain.last_block))
-
-blockchain.new_transaction('Charlie', 'David', 1.0)
-blockchain.new_transaction('David', 'Alice', 0.5)
-blockchain.new_block(blockchain.proof_of_work(blockchain.last_block))
-
-print(blockchain.chain)
+    def validate_message(self, message: ConsensusMessage) -> bool:
+        expected_signature = hashlib.sha256(
+            f"{message.sender_id}:{message.value}:{message.timestamp}".encode()
+        ).hexdigest()
+        return message.signature == expected_signature
