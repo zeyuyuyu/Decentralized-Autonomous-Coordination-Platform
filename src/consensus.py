@@ -1,101 +1,89 @@
-from typing import List, Dict, Set
-from dataclasses import dataclass
-from enum import Enum
 import hashlib
 import time
+import json
 
-class MessageType(Enum):
-    PRE_PREPARE = 'pre-prepare'
-    PREPARE = 'prepare' 
-    COMMIT = 'commit'
-    REPLY = 'reply'
+class Block:
+    def __init__(self, index, transactions, timestamp, previous_hash, nonce=0):
+        self.index = index
+        self.transactions = transactions
+        self.timestamp = timestamp
+        self.previous_hash = previous_hash
+        self.nonce = nonce
+        
+    def compute_hash(self):
+        block_string = json.dumps(self.__dict__, sort_keys=True)
+        return hashlib.sha256(block_string.encode()).hexdigest()
 
-@dataclass
-class ConsensusMessage:
-    msg_type: MessageType
-    view_num: int
-    seq_num: int
-    digest: str
-    node_id: str
-    timestamp: float
-    signature: str = ''
+class Blockchain:
+    def __init__(self):
+        self.chain = []
+        self.current_transactions = []
+        self.new_block(previous_hash='1', proof=100)
 
-class PBFTConsensus:
-    def __init__(self, node_id: str, total_nodes: int):
-        self.node_id = node_id
-        self.total_nodes = total_nodes
-        self.view_number = 0
-        self.sequence_number = 0
-        self.prepared_msgs: Dict[str, Set[ConsensusMessage]] = {}
-        self.committed_msgs: Dict[str, Set[ConsensusMessage]] = {}
-        self.f = (total_nodes - 1) // 3  # Max Byzantine nodes tolerated
-
-    def create_message(self, msg_type: MessageType, digest: str) -> ConsensusMessage:
-        msg = ConsensusMessage(
-            msg_type=msg_type,
-            view_num=self.view_number,
-            seq_num=self.sequence_number,
-            digest=digest,
-            node_id=self.node_id,
-            timestamp=time.time()
+    def new_block(self, proof, previous_hash=None):
+        block = Block(
+            index=len(self.chain) + 1,
+            transactions=self.current_transactions,
+            timestamp=time.time(),
+            previous_hash=previous_hash or self.last_block.compute_hash(),
+            nonce=proof
         )
-        msg.signature = self._sign_message(msg)
-        return msg
 
-    def handle_message(self, msg: ConsensusMessage) -> bool:
-        if not self._verify_message(msg):
+        self.current_transactions = []
+        self.chain.append(block)
+        return block
+
+    @property
+    def last_block(self):
+        return self.chain[-1]
+
+    def new_transaction(self, sender, recipient, amount):
+        self.current_transactions.append({
+            'sender': sender,
+            'recipient': recipient,
+            'amount': amount
+        })
+        return self.last_block.index + 1
+
+    def proof_of_work(self, block):
+        difficulty = 4
+        block.nonce = 0
+        computed_hash = block.compute_hash()
+        while not computed_hash.startswith('0' * difficulty):
+            block.nonce += 1
+            computed_hash = block.compute_hash()
+        return block.nonce
+
+    def is_valid(self):
+        block = self.chain[0]
+        if block.index != 1 or block.previous_hash != '1':
             return False
 
-        if msg.msg_type == MessageType.PRE_PREPARE:
-            return self._handle_pre_prepare(msg)
-        elif msg.msg_type == MessageType.PREPARE:
-            return self._handle_prepare(msg)
-        elif msg.msg_type == MessageType.COMMIT:
-            return self._handle_commit(msg)
-        return False
+        for i in range(1, len(self.chain)):
+            current_block = self.chain[i]
+            previous_block = self.chain[i - 1]
 
-    def _handle_pre_prepare(self, msg: ConsensusMessage) -> bool:
-        if msg.view_num != self.view_number:
-            return False
+            if current_block.previous_hash != previous_block.compute_hash():
+                return False
 
-        if msg.digest not in self.prepared_msgs:
-            self.prepared_msgs[msg.digest] = set()
-        self.prepared_msgs[msg.digest].add(msg)
+            if not self.is_valid_proof(current_block):
+                return False
 
-        prepare_msg = self.create_message(MessageType.PREPARE, msg.digest)
         return True
 
-    def _handle_prepare(self, msg: ConsensusMessage) -> bool:
-        if msg.digest not in self.prepared_msgs:
-            return False
+    def is_valid_proof(self, block):
+        difficulty = 4
+        return block.compute_hash().startswith('0' * difficulty)
 
-        self.prepared_msgs[msg.digest].add(msg)
-        
-        if len(self.prepared_msgs[msg.digest]) >= 2 * self.f + 1:
-            commit_msg = self.create_message(MessageType.COMMIT, msg.digest)
-            return True
-        return False
+# Example usage
+blockchain = Blockchain()
 
-    def _handle_commit(self, msg: ConsensusMessage) -> bool:
-        if msg.digest not in self.committed_msgs:
-            self.committed_msgs[msg.digest] = set()
-        
-        self.committed_msgs[msg.digest].add(msg)
+blockchain.new_transaction('Alice', 'Bob', 5.0)
+blockchain.new_transaction('Bob', 'Charlie', 2.5)
+blockchain.new_block(blockchain.proof_of_work(blockchain.last_block))
 
-        if len(self.committed_msgs[msg.digest]) >= 2 * self.f + 1:
-            return self._finalize_consensus(msg.digest)
-        return False
+blockchain.new_transaction('Charlie', 'David', 1.0)
+blockchain.new_transaction('David', 'Alice', 0.5)
+blockchain.new_block(blockchain.proof_of_work(blockchain.last_block))
 
-    def _finalize_consensus(self, digest: str) -> bool:
-        self.sequence_number += 1
-        return True
-
-    def _sign_message(self, msg: ConsensusMessage) -> str:
-        # TODO: Implement actual cryptographic signing
-        content = f"{msg.msg_type}:{msg.view_num}:{msg.seq_num}:{msg.digest}:{msg.node_id}:{msg.timestamp}"
-        return hashlib.sha256(content.encode()).hexdigest()
-
-    def _verify_message(self, msg: ConsensusMessage) -> bool:
-        # TODO: Implement actual signature verification
-        expected_sig = self._sign_message(msg)
-        return msg.signature == expected_sig
+print(blockchain.chain)
